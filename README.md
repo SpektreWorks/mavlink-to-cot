@@ -1,8 +1,6 @@
-# mavlink-to-cot
+﻿# mavlink-to-cot
 
 Translates from MAVLink to COT.
-
-Focuses on a 1:1 travehicle 
 
 ## Features
 
@@ -18,7 +16,7 @@ The following MAVLink messages must be provided:
 - `SYSTEM_TIME` is required at least once to establish the offset between the time since boot on the MAVLink vehicle and the unix timestamp. Recommended to maintain at least 0.5Hz on this just to adapt to clock drift and jitter.
 
 Optional MAVLink messages:
-- `GPS_RAW_INT` - is used to source a position uncertinanty estimate. Must be provided as MAVLink2 and have the `h_acc` and `v_acc` extension fields present to be useful. Recommended to match the `GLOBAL_POSITION_INT` update rate.
+- `GPS_RAW_INT` - is used to source a position uncertainty estimate. Must be provided as MAVLink2 and have the `h_acc` and `v_acc` extension fields present to be useful. Recommended to match the `GLOBAL_POSITION_INT` update rate.
 
 ## Notes
 
