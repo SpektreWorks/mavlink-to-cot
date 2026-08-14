@@ -1,0 +1,13 @@
+cot_ip = "239.2.2.2"
+cot_port = 6969
+cot_rate = 1
+mavlink = "udpin:127.0.0.1:8000"
+
+[vehicle]
+uid = "TEST"
+cot_type = "a-f-A-M-F-Q"
+error_confidence = 1.1
+radius = 3
+height = 1
+sys_id = 1
+comp_id = 1

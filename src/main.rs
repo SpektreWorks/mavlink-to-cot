@@ -1,8 +1,10 @@
 use chrono::{DateTime, Utc};
+use config::{Environment, File};
 use core::net::Ipv4Addr;
 use log::{debug, error, info, trace};
 use mavlink::{AsyncMavConnection, dialects::ardupilotmega};
 use num_traits::cast::ToPrimitive;
+use serde::Deserialize;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 
@@ -55,16 +57,25 @@ struct EventDetails {
     when: DateTime<Utc>,
 }
 
-#[derive(Debug)]
-struct VehicleConfig<'a> {
-    uid: &'a str,
-    cot_type: &'a str,
+#[derive(Debug, Deserialize)]
+struct VehicleConfig {
+    uid: String,
+    cot_type: String,
     // vehicles must report a cylinder they occupy
     radius: f32,           // radius in meters of the space the object occupies
     height: f32,           // height in meters of the space the object occupies
     error_confidence: f32, // scalar that can be applied to reported errors, allows to account for error in the fusing process
     sys_id: u8,
     comp_id: u8,
+}
+
+#[derive(Debug, Deserialize)]
+struct Config {
+    cot_port: u16,
+    cot_ip: String,
+    mavlink: String,
+    cot_rate: f32,
+    vehicle: VehicleConfig,
 }
 
 struct TimestampOffset {
@@ -84,12 +95,12 @@ impl TimestampOffset {
 
 async fn send_report(
     socket: &UdpSocket,
-    config: &VehicleConfig<'_>,
+    config: &VehicleConfig,
     details: EventDetails,
 ) -> Result<(), std::io::Error> {
     let timestamp_format = "%Y-%m-%dT%H:%M:%S.%fZ";
-    let uid = config.uid;
-    let cot_type = config.cot_type;
+    let uid = &config.uid;
+    let cot_type = &config.cot_type;
     let how = "m-f"; // machine fused
     let lat = details.latitude;
     let lon = details.longitude;
@@ -117,34 +128,35 @@ async fn send_report(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let config = VehicleConfig {
-        uid: "S501",
-        cot_type: "a-f-A-M-F-Q",
-        radius: 4f32,
-        height: 1f32,
-        error_confidence: 1.1f32,
-        sys_id: 1,
-        comp_id: 1,
-    };
+    let s = config::Config::builder()
+        .add_source(File::with_name("/etc/mavlink-cot.toml").required(false))
+        .add_source(File::with_name("config.toml").required(false))
+        .add_source(Environment::with_prefix("MAVLINK_TO_COT"))
+        .set_default("vehicle.error_confidence", "1.1")?
+        .build()?;
+
+    let config: Config = s.try_deserialize()?;
+
+    debug!("Loaded config {config:?}");
 
     #[cfg(feature = "egm2008")]
     info!("Using the egm2008 model");
     #[cfg(feature = "egm96")]
     info!("Using the egm96 model");
 
-    let address: Ipv4Addr = "239.2.2.2".parse()?;
-    let port = 6969;
+    let address: Ipv4Addr = config.cot_ip.parse()?;
+    let port = config.cot_port;
     info!("Joining multicast group: {address}:{port}");
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).await?;
     info!("socket is {socket:?}");
     socket.connect((address, port)).await?;
     socket.join_multicast_v4(address, Ipv4Addr::UNSPECIFIED)?;
 
-    let connection_str = "udpin:127.0.0.1:8000";
+    let connection_str = &config.mavlink;
     info!("Opening MAVLink connection to {connection_str}");
     let conn = mavlink::connect_async::<ardupilotmega::MavMessage>(connection_str).await?;
 
-    let update_delay = Duration::from_millis(2000);
+    let update_delay = Duration::from_millis((1000f32 / config.cot_rate) as u64);
 
     wakeup_route(&*conn).await?;
 
@@ -160,7 +172,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (header, msg) = conn.recv().await?;
 
         // filter out messages from anything but the desired vehicle
-        if header.component_id != config.comp_id || header.system_id != config.sys_id {
+        if header.component_id != config.vehicle.comp_id
+            || header.system_id != config.vehicle.sys_id
+        {
             continue;
         }
 
@@ -220,7 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .to_degrees()
                 .clamp(-90f32, 90f32);
-                debug!("Undulation is {undulation} at ({latitude}, {longitude})");
+                trace!("Undulation is {undulation} at ({latitude}, {longitude})");
                 let event = EventDetails {
                     latitude,
                     longitude,
@@ -232,7 +246,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     slope,
                     when: when.unwrap(),
                 };
-                send_report(&socket, &config, event).await?;
+                send_report(&socket, &config.vehicle, event).await?;
             }
             ardupilotmega::MavMessage::SYSTEM_TIME(data) => {
                 trace!("{data:?}");
