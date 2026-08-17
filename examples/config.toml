@@ -1,13 +1,41 @@
+# cot_ip - what multicast IP to broadcast on
 cot_ip = "239.2.2.2"
+# cot_port - what port the multicast data should be sent on
 cot_port = 6969
+# cot_rate - maximum update rate in Hz
 cot_rate = 1
+# mavlink - conect string describing where MAVLink data is sourced
+# valid combinations are:
+#   "tcpin:<addr>:<port>" to create a TCP server, listening an incoming connection
+#   "tcpout:<addr>:<port>" to create a TCP client
+#   "udpin:<addr>:<port>" to create a UDP server, listening for incoming packets
+#   "udpout:<addr>:<port>" to create a UDP client
+#   "udpbcast:<addr>:<port>" to create a UDP broadcast
 mavlink = "udpin:127.0.0.1:8000"
 
+# [vehicle] describes details about the MAVLink system that is being translated
 [vehicle]
-uid = "TEST"
-cot_type = "a-f-A-M-F-Q"
-error_confidence = 1.1
-radius = 3
-height = 1
+# Because MAVLink can have multiple vehicles and components on the same link,
+# it must be filtered by system and component ID to identify which vehicle to
+# translate.
+
+# sys_id - what system ID to translate to COTa, optional with a default value of 1
 sys_id = 1
+# comp_id - what component ID to translate to COT, optional with a default value of 1
 comp_id = 1
+
+# uid - is the required UID for COT messages
+uid = "TEST"
+# cot_type - the descriptive atom for what type of vehicle this is
+cot_type = "a-f-A-M-F-Q"
+# error_confidence - a scalar applied to the GPS estimated accuracy reports used to
+#                    account for internal fusing error, optional with a default value
+#                    of 1.1
+error_confidence = 1.1
+# COT specifies targets as occupying a cylinder of space, radius and height are used to
+# describe that cylinder. Error estimates from GPS will be added if available.
+
+# radius - the radius of space that the vehicle occupies horizontally, in meters
+radius = 3
+# height - the height of space that the vehicle occupies vertically, in meters
+height = 1

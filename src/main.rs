@@ -124,14 +124,63 @@ async fn send_report(
     Ok(())
 }
 
+fn sandbox_prep() -> Result<(), Box<dyn std::error::Error>> {
+    // use landlock under linux
+    #[cfg(target_os = "linux")]
+    {
+        use landlock::{
+            ABI, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, RestrictSelfAttr,
+            Ruleset, RulesetAttr, RulesetCreatedAttr,
+        };
+        let mut rules = Ruleset::default()
+            .set_compatibility(CompatLevel::BestEffort)
+            .handle_access(AccessFs::from_all(ABI::V9))?
+            .create()?
+            .all_threads(true)?;
+        if let Ok(fd) = PathFd::new("/etc/mavlink-to-cot.toml") {
+            trace!("Adding /etc to landlock");
+            rules = rules.add_rule(PathBeneath::new(fd, AccessFs::ReadFile))?;
+        }
+        if let Ok(fd) = PathFd::new("./config.toml") {
+            trace!("Adding local config to landlock");
+            rules = rules.add_rule(PathBeneath::new(fd, AccessFs::ReadFile))?;
+        }
+        rules.restrict_self()?;
+    }
+    Ok(())
+}
+
+fn sandbox_tighten() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "linux")]
+    {
+        use landlock::{
+            ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, RestrictSelfAttr, Ruleset,
+            RulesetAttr,
+        };
+        Ruleset::default()
+            .set_compatibility(CompatLevel::BestEffort)
+            .handle_access(AccessFs::from_all(ABI::V9))?
+            .handle_access(AccessNet::from_all(ABI::V9))?
+            .create()?
+            .all_threads(true)?
+            .restrict_self()?;
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
+    trace!("strating to tace");
+
+    sandbox_prep()?;
 
     let s = config::Config::builder()
         .add_source(File::with_name("/etc/mavlink-cot.toml").required(false))
         .add_source(File::with_name("config.toml").required(false))
-        .add_source(Environment::with_prefix("MAVLINK_TO_COT"))
+        .add_source(Environment::with_prefix("MAVLINK_TO_COT").separator("_"))
+        .set_default("vehicle.sys_id", "1")?
+        .set_default("vehicle.comp_id", "1")?
         .set_default("vehicle.error_confidence", "1.1")?
         .build()?;
 
@@ -155,6 +204,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let connection_str = &config.mavlink;
     info!("Opening MAVLink connection to {connection_str}");
     let conn = mavlink::connect_async::<ardupilotmega::MavMessage>(connection_str).await?;
+
+    sandbox_tighten()?;
 
     let update_delay = Duration::from_millis((1000f32 / config.cot_rate) as u64);
 

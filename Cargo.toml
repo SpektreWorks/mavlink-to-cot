@@ -24,3 +24,6 @@ serde = {version = "1.0.229", features = ["derive"]}
 default = ["egm2008"]
 egm2008 = ["dep:egm2008"]
 egm96 = ["dep:egm96"]
+
+[target.'cfg(target_os="linux")'.dependencies]
+landlock = "0.4.7"
