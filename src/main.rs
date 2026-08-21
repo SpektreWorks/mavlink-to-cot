@@ -8,6 +8,9 @@ use serde::Deserialize;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 
+const CONFIG_ETC: &str = "/etc/mavlink-to-cot.toml";
+const CONFIG_LOCAL: &str = "./config.toml";
+
 // a mavlink router won't send data over udp if the port hasn't been sent data
 // so this will ping the router a handfull of times
 async fn wakeup_route(
@@ -137,11 +140,11 @@ fn sandbox_prep() -> Result<(), Box<dyn std::error::Error>> {
             .handle_access(AccessFs::from_all(ABI::V9))?
             .create()?
             .all_threads(true)?;
-        if let Ok(fd) = PathFd::new("/etc/mavlink-to-cot.toml") {
+        if let Ok(fd) = PathFd::new(CONFIG_ETC) {
             trace!("Adding /etc to landlock");
             rules = rules.add_rule(PathBeneath::new(fd, AccessFs::ReadFile))?;
         }
-        if let Ok(fd) = PathFd::new("./config.toml") {
+        if let Ok(fd) = PathFd::new(CONFIG_LOCAL) {
             trace!("Adding local config to landlock");
             rules = rules.add_rule(PathBeneath::new(fd, AccessFs::ReadFile))?;
         }
@@ -176,8 +179,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     sandbox_prep()?;
 
     let s = config::Config::builder()
-        .add_source(File::with_name("/etc/mavlink-cot.toml").required(false))
-        .add_source(File::with_name("config.toml").required(false))
+        .add_source(File::with_name(CONFIG_ETC).required(false))
+        .add_source(File::with_name(CONFIG_LOCAL).required(false))
         .add_source(Environment::with_prefix("MAVLINK_TO_COT").separator("_"))
         .set_default("vehicle.sys_id", "1")?
         .set_default("vehicle.comp_id", "1")?
