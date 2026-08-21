@@ -10,6 +10,7 @@ use tokio::net::UdpSocket;
 
 const CONFIG_ETC: &str = "/etc/mavlink-to-cot.toml";
 const CONFIG_LOCAL: &str = "./config.toml";
+const ENV_PREFIX: &str = "MAVLINK_TO_COT";
 
 // a mavlink router won't send data over udp if the port hasn't been sent data
 // so this will ping the router a handfull of times
@@ -173,15 +174,16 @@ fn sandbox_tighten() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
-    trace!("strating to tace");
+    let env = env_logger::Env::default()
+        .filter_or(ENV_PREFIX.to_owned() + "_LOG", "info");
+    env_logger::init_from_env(env);
 
     sandbox_prep()?;
 
     let s = config::Config::builder()
         .add_source(File::with_name(CONFIG_ETC).required(false))
         .add_source(File::with_name(CONFIG_LOCAL).required(false))
-        .add_source(Environment::with_prefix("MAVLINK_TO_COT").separator("_"))
+        .add_source(Environment::with_prefix(ENV_PREFIX).separator("_"))
         .set_default("vehicle.sys_id", "1")?
         .set_default("vehicle.comp_id", "1")?
         .set_default("vehicle.error_confidence", "1.1")?
