@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::DateTime;
 use config::{Environment, File};
 use core::net::Ipv4Addr;
 use log::{debug, error, info, trace};
@@ -48,23 +48,10 @@ async fn wakeup_route(
     Ok(())
 }
 
-#[derive(Debug)]
-struct EventDetails {
-    latitude: f64,
-    longitude: f64,
-    altitude: f32,       // hae
-    course: f32,         // 0-360 degrees
-    accuracy_horiz: f32, // m
-    accuracy_vert: f32,  // m
-    speed: f32,          // 3d speed, m/s
-    slope: f32,          // degrees
-    when: DateTime<Utc>,
-}
-
 #[derive(Debug, Deserialize)]
 struct VehicleConfig {
     uid: String,
-    cot_type: String,
+    cot_type: Option<String>, // derived from HEARTBEAT MAV_TYPE when unset
     // vehicles must report a cylinder they occupy
     radius: f32,           // radius in meters of the space the object occupies
     height: f32,           // height in meters of the space the object occupies
@@ -97,35 +84,42 @@ impl TimestampOffset {
     }
 }
 
-async fn send_report(
-    socket: &UdpSocket,
+fn build_event(
     config: &VehicleConfig,
-    details: EventDetails,
-) -> Result<(), std::io::Error> {
-    let timestamp_format = "%Y-%m-%dT%H:%M:%S.%fZ";
-    let uid = &config.uid;
-    let cot_type = &config.cot_type;
-    let how = "m-f"; // machine fused
-    let lat = details.latitude;
-    let lon = details.longitude;
-    let hae = details.altitude;
-    let course = details.course;
-    let speed = details.speed;
-    let slope = details.slope;
-    let timestamp = details.when.format(timestamp_format);
-    let timestamp_stale = (details.when + Duration::from_secs(2)).format(timestamp_format);
-    let ce = details
-        .accuracy_horiz
-        .mul_add(config.error_confidence, config.radius);
-    let le = details
-        .accuracy_vert
-        .mul_add(config.error_confidence, config.height * 0.5f32);
-    let output = format!(
-        "<?xml_version='1.0' encoding='utf-8'?><event uid=\"{uid}\" type=\"{cot_type}\" how=\"{how}\" time=\"{timestamp}\" start=\"{timestamp}\" stale=\"{timestamp_stale}\"><point lat=\"{lat}\" lon=\"{lon}\" hae=\"{hae}\" ce=\"{ce}\" le=\"{le}\" /><detail><track course=\"{course}\" speed=\"{speed}\" slope=\"{slope}\"/></detail></event>"
-    );
-    debug!("Sending on {socket:?} {output}");
-    socket.send(output.as_bytes()).await?;
-    Ok(())
+    pos: &ardupilotmega::GLOBAL_POSITION_INT_DATA,
+    mav_type: Option<u8>,
+    when_us: u64,
+    undulation: f32,
+    h_acc: f32,
+    v_acc: f32,
+) -> Option<uas_cot::Event> {
+    let gpi = uas_cot::mavlink::GlobalPositionInt {
+        time_boot_ms: pos.time_boot_ms,
+        lat: pos.lat,
+        lon: pos.lon,
+        alt: pos.alt,
+        relative_alt: pos.relative_alt,
+        vx: pos.vx,
+        vy: pos.vy,
+        vz: pos.vz,
+        hdg: pos.hdg,
+    };
+    let opts = uas_cot::mavlink::Options {
+        stale_secs: 2,
+        ..Default::default()
+    };
+    let mut event = uas_cot::mavlink::vehicle(config.sys_id, &gpi, mav_type, when_us, &opts)?;
+    event.uid = config.uid.clone();
+    event.callsign = Some(config.uid.clone());
+    if let Some(cot_type) = &config.cot_type {
+        event.kind = cot_type.clone();
+    }
+    event.how = "m-f".into(); // machine fused
+    event.precision_location = None;
+    event.point.hae += f64::from(undulation);
+    event.point.ce = f64::from(h_acc.mul_add(config.error_confidence, config.radius));
+    event.point.le = f64::from(v_acc.mul_add(config.error_confidence, config.height * 0.5f32));
+    Some(event)
 }
 
 fn sandbox_prep() -> Result<(), Box<dyn std::error::Error>> {
@@ -222,6 +216,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut last_send = Instant::now();
     let mut timestamps: Option<TimestampOffset> = None;
+    let mut mav_type: Option<u8> = None;
 
     // core loop
     loop {
@@ -277,32 +272,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let undulation = egm2008::geoid_height(latitude as f32, longitude as f32)?;
                 #[cfg(feature = "egm96")]
                 let undulation = egm96::egm96_compute_altitude_offset(latitude, longitude) as f32;
-                let speed = f32::sqrt(
-                    (data.vx as f32).powi(2) + (data.vy as f32).powi(2) + (data.vz as f32).powi(2),
-                ) * 1e-2f32;
-                let course = {
-                    let raw = f32::atan2(data.vy as f32, data.vx as f32).to_degrees();
-                    if raw < 0f32 { raw + 180f32 } else { raw }
-                };
-                let slope = f32::atan2(
-                    data.vz as f32,
-                    f32::sqrt((data.vx as f32).powi(2) + (data.vy as f32).powi(2)),
-                )
-                .to_degrees()
-                .clamp(-90f32, 90f32);
                 trace!("Undulation is {undulation} at ({latitude}, {longitude})");
-                let event = EventDetails {
-                    latitude,
-                    longitude,
-                    altitude: data.alt as f32 * 1e-3 + undulation,
-                    accuracy_horiz: h_acc,
-                    accuracy_vert: v_acc,
-                    speed,
-                    course,
-                    slope,
-                    when: when.unwrap(),
-                };
-                send_report(&socket, &config.vehicle, event).await?;
+                let when_us = when.unwrap().timestamp_micros() as u64;
+                if let Some(event) = build_event(
+                    &config.vehicle,
+                    &data,
+                    mav_type,
+                    when_us,
+                    undulation,
+                    h_acc,
+                    v_acc,
+                ) {
+                    let output = event.to_xml();
+                    debug!("Sending on {socket:?} {output}");
+                    socket.send(output.as_bytes()).await?;
+                }
+            }
+            ardupilotmega::MavMessage::HEARTBEAT(data) => {
+                mav_type = data.mavtype.to_u8();
             }
             ardupilotmega::MavMessage::SYSTEM_TIME(data) => {
                 trace!("{data:?}");
@@ -310,5 +297,88 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vehicle(cot_type: Option<&str>) -> VehicleConfig {
+        VehicleConfig {
+            uid: "UAS <1> & \"co\"".into(),
+            cot_type: cot_type.map(Into::into),
+            radius: 3.0,
+            height: 1.0,
+            error_confidence: 1.1,
+            sys_id: 1,
+            comp_id: 1,
+        }
+    }
+
+    fn westbound() -> ardupilotmega::GLOBAL_POSITION_INT_DATA {
+        ardupilotmega::GLOBAL_POSITION_INT_DATA {
+            time_boot_ms: 0,
+            lat: 473_977_418,
+            lon: 85_455_939,
+            alt: 488_000,
+            relative_alt: 10_000,
+            vx: 0,
+            vy: -500,
+            vz: 0,
+            hdg: u16::MAX,
+        }
+    }
+
+    #[test]
+    fn emits_well_formed_cot() {
+        let quad = Some(ardupilotmega::MavType::MAV_TYPE_QUADROTOR.to_u8().unwrap());
+        let event = build_event(
+            &vehicle(None),
+            &westbound(),
+            quad,
+            1_700_000_000_000_000,
+            47.5,
+            2.0,
+            4.0,
+        )
+        .unwrap();
+        let xml = event.to_xml();
+        assert!(
+            xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?><event version=\"2.0\" "),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("uid=\"UAS &lt;1&gt; &amp; &quot;co&quot;\""),
+            "{xml}"
+        );
+        assert!(xml.contains("type=\"a-f-A-M-F-Q\" how=\"m-f\""), "{xml}");
+        assert!(xml.contains("hae=\"535.5\" ce=\"5.2\" le=\"4.9\""), "{xml}");
+        assert!(
+            xml.contains("<track course=\"270.0\" speed=\"5.00\"/>"),
+            "{xml}"
+        );
+    }
+
+    #[test]
+    fn cot_type_follows_mav_type_unless_configured() {
+        let rover = Some(
+            ardupilotmega::MavType::MAV_TYPE_GROUND_ROVER
+                .to_u8()
+                .unwrap(),
+        );
+        let derived = build_event(&vehicle(None), &westbound(), rover, 0, 0.0, 1.0, 1.0).unwrap();
+        assert_eq!(derived.kind, "a-f-G-E-V");
+        let fixed = build_event(
+            &vehicle(Some("a-f-A-M-F-Q")),
+            &westbound(),
+            rover,
+            0,
+            0.0,
+            1.0,
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(fixed.kind, "a-f-A-M-F-Q");
     }
 }

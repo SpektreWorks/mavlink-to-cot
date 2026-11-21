@@ -26,8 +26,9 @@ comp_id = 1
 
 # uid - is the required UID for COT messages
 uid = "TEST"
-# cot_type - the descriptive atom for what type of vehicle this is
-cot_type = "a-f-A-M-F-Q"
+# cot_type - optional override for the descriptive atom; by default it is derived
+#            from the vehicle HEARTBEAT MAV_TYPE (a quadrotor is a-f-A-M-F-Q)
+# cot_type = "a-f-A-M-F-Q"
 # error_confidence - a scalar applied to the GPS estimated accuracy reports used to
 #                    account for internal fusing error, optional with a default value
 #                    of 1.1
