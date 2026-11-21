@@ -19,6 +19,7 @@ tokio-macros = "2.7.2"
 chrono = {version = "0.4.45", default-features = false, features = ["alloc", "std"]}
 config = {version = "0.15.25", default-features = false, features = ["toml"]}
 serde = {version = "1.0.229", features = ["derive"]}
+uas-cot = {version = "0.4.0", default-features = false}
 
 [features]
 default = ["egm2008"]
